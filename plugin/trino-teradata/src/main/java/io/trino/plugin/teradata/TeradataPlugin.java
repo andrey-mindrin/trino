@@ -20,6 +20,6 @@ public class TeradataPlugin
 {
     public TeradataPlugin()
     {
-        super("teradata", new MySqlClientModule());
+        super("teradata", new TeradataClientModule());
     }
 }
