@@ -139,6 +139,7 @@
         <module>plugin/trino-resource-group-managers</module>
         <module>plugin/trino-session-property-managers</module>
         <module>plugin/trino-sqlserver</module>
+        <module>plugin/trino-teradata</module>
         <module>plugin/trino-teradata-functions</module>
         <module>plugin/trino-thrift</module>
         <module>plugin/trino-thrift-api</module>
@@ -1103,6 +1104,12 @@
                 <groupId>com.teradata</groupId>
                 <artifactId>re2j-td</artifactId>
                 <version>1.4</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.teradata.jdbc</groupId>
+                <artifactId>terajdbc4</artifactId>
+                <version>17.00.00.03</version>
             </dependency>
 
             <dependency>
