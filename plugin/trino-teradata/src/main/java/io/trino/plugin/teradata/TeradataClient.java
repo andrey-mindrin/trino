@@ -13,22 +13,26 @@
  */
 package io.trino.plugin.teradata;
 
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import io.airlift.log.Logger;
 import io.trino.plugin.jdbc.BaseJdbcClient;
 import io.trino.plugin.jdbc.BaseJdbcConfig;
 import io.trino.plugin.jdbc.ColumnMapping;
 import io.trino.plugin.jdbc.ConnectionFactory;
 import io.trino.plugin.jdbc.JdbcTypeHandle;
+import io.trino.plugin.jdbc.RemoteTableName;
 import io.trino.plugin.jdbc.WriteMapping;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.ConnectorSession;
+import io.trino.spi.connector.ConnectorTableMetadata;
+import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.type.CharType;
 import io.trino.spi.type.DecimalType;
 import io.trino.spi.type.Decimals;
-import io.trino.spi.type.StandardTypes;
+import io.trino.spi.type.DoubleType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeManager;
-import io.trino.spi.type.TypeSignature;
 import io.trino.spi.type.VarcharType;
 
 import javax.inject.Inject;
@@ -37,41 +41,41 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.sql.Types;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.function.BiFunction;
 
-import static io.airlift.slice.Slices.utf8Slice;
-import static io.trino.plugin.base.util.JsonTypeUtil.jsonParse;
+import static com.google.common.base.Preconditions.checkArgument;
 import static io.trino.plugin.jdbc.DecimalConfig.DecimalMapping.ALLOW_OVERFLOW;
 import static io.trino.plugin.jdbc.DecimalSessionSessionProperties.getDecimalDefaultScale;
 import static io.trino.plugin.jdbc.DecimalSessionSessionProperties.getDecimalRounding;
 import static io.trino.plugin.jdbc.DecimalSessionSessionProperties.getDecimalRoundingMode;
 import static io.trino.plugin.jdbc.JdbcErrorCode.JDBC_ERROR;
-import static io.trino.plugin.jdbc.PredicatePushdownController.DISABLE_PUSHDOWN;
 import static io.trino.plugin.jdbc.PredicatePushdownController.FULL_PUSHDOWN;
-import static io.trino.plugin.jdbc.StandardColumnMappings.bigintColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.bigintWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.charWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.dateColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.dateWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.decimalColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.defaultCharColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.defaultVarcharColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.doubleColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.doubleWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.integerColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.integerWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.longDecimalWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.realColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.realWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.shortDecimalWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.smallintColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.smallintWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.timestampWriteFunctionUsingSqlTimestamp;
-import static io.trino.plugin.jdbc.StandardColumnMappings.tinyintColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.tinyintWriteFunction;
 import static io.trino.plugin.jdbc.StandardColumnMappings.varbinaryReadFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.varbinaryWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.varcharWriteFunction;
+import static io.trino.plugin.teradata.TeradataColumnMappings.bigintColumnMapping;
+import static io.trino.plugin.teradata.TeradataColumnMappings.bigintWriteFunction;
+import static io.trino.plugin.teradata.TeradataColumnMappings.charWriteFunction;
+import static io.trino.plugin.teradata.TeradataColumnMappings.dateColumnMapping;
+import static io.trino.plugin.teradata.TeradataColumnMappings.dateWriteFunction;
+import static io.trino.plugin.teradata.TeradataColumnMappings.decimalColumnMapping;
+import static io.trino.plugin.teradata.TeradataColumnMappings.defaultCharColumnMapping;
+import static io.trino.plugin.teradata.TeradataColumnMappings.defaultVarcharColumnMapping;
+import static io.trino.plugin.teradata.TeradataColumnMappings.doubleColumnMapping;
+import static io.trino.plugin.teradata.TeradataColumnMappings.doubleWriteFunction;
+import static io.trino.plugin.teradata.TeradataColumnMappings.integerColumnMapping;
+import static io.trino.plugin.teradata.TeradataColumnMappings.integerWriteFunction;
+import static io.trino.plugin.teradata.TeradataColumnMappings.longDecimalWriteFunction;
+import static io.trino.plugin.teradata.TeradataColumnMappings.realColumnMapping;
+import static io.trino.plugin.teradata.TeradataColumnMappings.realWriteFunction;
+import static io.trino.plugin.teradata.TeradataColumnMappings.shortDecimalWriteFunction;
+import static io.trino.plugin.teradata.TeradataColumnMappings.smallintColumnMapping;
+import static io.trino.plugin.teradata.TeradataColumnMappings.smallintWriteFunction;
+import static io.trino.plugin.teradata.TeradataColumnMappings.tinyintColumnMapping;
+import static io.trino.plugin.teradata.TeradataColumnMappings.tinyintWriteFunction;
+import static io.trino.plugin.teradata.TeradataColumnMappings.varbinaryWriteFunction;
+import static io.trino.plugin.teradata.TeradataColumnMappings.varcharWriteFunction;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.DateType.DATE;
@@ -80,20 +84,31 @@ import static io.trino.spi.type.DoubleType.DOUBLE;
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.RealType.REAL;
 import static io.trino.spi.type.SmallintType.SMALLINT;
-import static io.trino.spi.type.TimeWithTimeZoneType.TIME_WITH_TIME_ZONE;
-import static io.trino.spi.type.TimestampType.TIMESTAMP_MILLIS;
-import static io.trino.spi.type.TimestampWithTimeZoneType.TIMESTAMP_TZ_MILLIS;
 import static io.trino.spi.type.TinyintType.TINYINT;
 import static io.trino.spi.type.VarbinaryType.VARBINARY;
 import static java.lang.Math.max;
 import static java.lang.Math.min;
 import static java.lang.String.format;
+import static java.lang.String.join;
+import static java.util.Locale.ENGLISH;
+import static java.util.stream.Collectors.joining;
 
 public class TeradataClient
         extends BaseJdbcClient
 {
     private static final Logger log = Logger.get(TeradataClient.class);
-    private final Type jsonType;
+    private static final int TERADATA_VARCHAR_MAX_CHARS = 64000;
+
+    private static final Map<Type, WriteMapping> WRITE_MAPPINGS = ImmutableMap.<Type, WriteMapping>builder()
+            .put(BIGINT, WriteMapping.longMapping("bigint", bigintWriteFunction()))
+            .put(SMALLINT, WriteMapping.longMapping("smallint", smallintWriteFunction()))
+            .put(TINYINT, WriteMapping.longMapping("tinyint", tinyintWriteFunction()))
+            .put(INTEGER, WriteMapping.longMapping("integer", integerWriteFunction()))
+            .put(DOUBLE, WriteMapping.doubleMapping("double precision", doubleWriteFunction()))
+            .put(VARBINARY, WriteMapping.sliceMapping("blob", varbinaryWriteFunction()))
+            .put(DATE, WriteMapping.longMapping("date", dateWriteFunction()))
+            .put(REAL, WriteMapping.longMapping("real", realWriteFunction()))
+            .build();
 
     @Inject
     public TeradataClient(
@@ -102,7 +117,6 @@ public class TeradataClient
             TypeManager typeManager)
     {
         super(config, "\"", connectionFactory);
-        this.jsonType = typeManager.getType(new TypeSignature(StandardTypes.JSON));
     }
 
     @Override
@@ -118,20 +132,9 @@ public class TeradataClient
     @Override
     public Optional<ColumnMapping> toColumnMapping(ConnectorSession session, Connection connection, JdbcTypeHandle typeHandle)
     {
-        String jdbcTypeName = typeHandle.getJdbcTypeName()
-                .orElseThrow(() -> new TrinoException(JDBC_ERROR, "Type name is missing: " + typeHandle));
-
         Optional<ColumnMapping> mapping = getForcedMappingToVarchar(typeHandle);
         if (mapping.isPresent()) {
             return mapping;
-        }
-        Optional<ColumnMapping> unsignedMapping = getUnsignedMapping(typeHandle);
-        if (unsignedMapping.isPresent()) {
-            return unsignedMapping;
-        }
-
-        if (jdbcTypeName.equalsIgnoreCase("json")) {
-            return Optional.of(jsonColumnMapping());
         }
 
         switch (typeHandle.getJdbcType()) {
@@ -153,6 +156,7 @@ public class TeradataClient
             case Types.DOUBLE:
                 return Optional.of(doubleColumnMapping());
 
+            case Types.NUMERIC:
             case Types.DECIMAL:
                 int decimalDigits = typeHandle.getDecimalDigits().orElseThrow(() -> new IllegalStateException("decimal digits not present"));
                 int precision = typeHandle.getRequiredColumnSize();
@@ -189,118 +193,101 @@ public class TeradataClient
                 // TODO support higher precisions (https://github.com/trinodb/trino/issues/6910)
                 break; // currently handled by the default mappings
         }
-
-        // TODO add explicit mappings
-        return legacyToPrestoType(session, connection, typeHandle);
+        return Optional.empty();
     }
 
     @Override
     public WriteMapping toWriteMapping(ConnectorSession session, Type type)
     {
-        if (type == TINYINT) {
-            return WriteMapping.longMapping("tinyint", tinyintWriteFunction());
-        }
-        if (type == SMALLINT) {
-            return WriteMapping.longMapping("smallint", smallintWriteFunction());
-        }
-        if (type == INTEGER) {
-            return WriteMapping.longMapping("integer", integerWriteFunction());
-        }
-        if (type == BIGINT) {
-            return WriteMapping.longMapping("bigint", bigintWriteFunction());
-        }
-        if (type == REAL) {
-            return WriteMapping.longMapping("float", realWriteFunction());
-        }
-        if (type == DOUBLE) {
-            return WriteMapping.doubleMapping("double precision", doubleWriteFunction());
-        }
-
-        if (type instanceof DecimalType) {
-            DecimalType decimalType = (DecimalType) type;
-            String dataType = format("decimal(%s, %s)", decimalType.getPrecision(), decimalType.getScale());
-            if (decimalType.isShort()) {
-                return WriteMapping.longMapping(dataType, shortDecimalWriteFunction(decimalType));
-            }
-            return WriteMapping.sliceMapping(dataType, longDecimalWriteFunction(decimalType));
-        }
-
-        if (type == DATE) {
-            return WriteMapping.longMapping("date", dateWriteFunction());
-        }
-
-        if (TIME_WITH_TIME_ZONE.equals(type) || TIMESTAMP_TZ_MILLIS.equals(type)) {
-            throw new TrinoException(NOT_SUPPORTED, "Unsupported column type: " + type.getDisplayName());
-        }
-        if (TIMESTAMP_MILLIS.equals(type)) {
-            // TODO use `timestampWriteFunction` (https://github.com/trinodb/trino/issues/6910)
-            return WriteMapping.longMapping("datetime", timestampWriteFunctionUsingSqlTimestamp(TIMESTAMP_MILLIS));
-        }
-        if (VARBINARY.equals(type)) {
-            return WriteMapping.sliceMapping("mediumblob", varbinaryWriteFunction());
-        }
-
-        if (type instanceof CharType) {
-            return WriteMapping.sliceMapping("char(" + ((CharType) type).getLength() + ")", charWriteFunction());
-        }
-
         if (type instanceof VarcharType) {
-            VarcharType varcharType = (VarcharType) type;
             String dataType;
-            if (varcharType.isUnbounded()) {
-                dataType = "longtext";
-            }
-            else if (varcharType.getBoundedLength() <= 255) {
-                dataType = "tinytext";
-            }
-            else if (varcharType.getBoundedLength() <= 65535) {
-                dataType = "text";
-            }
-            else if (varcharType.getBoundedLength() <= 16777215) {
-                dataType = "mediumtext";
+            VarcharType varcharType = (VarcharType) type;
+            if (varcharType.isUnbounded() || varcharType.getBoundedLength() > TERADATA_VARCHAR_MAX_CHARS) {
+                dataType = "clob";
+                return WriteMapping.sliceMapping(dataType, varcharWriteFunction());
             }
             else {
-                dataType = "longtext";
+                dataType = "varchar(" + varcharType.getBoundedLength() + ")";
+                return WriteMapping.sliceMapping(dataType, varcharWriteFunction());
             }
-            return WriteMapping.sliceMapping(dataType, varcharWriteFunction());
         }
-
-        if (type.equals(jsonType)) {
-            return WriteMapping.sliceMapping("json", varcharWriteFunction());
+        if (type instanceof CharType) {
+            String dataType = "char(" + ((CharType) type).getLength() + ")";
+            return WriteMapping.sliceMapping(dataType, charWriteFunction());
         }
-
-        return legacyToWriteMapping(session, type);
+        if (type instanceof DecimalType) {
+            String dataType = format("number(%s, %s)", ((DecimalType) type).getPrecision(), ((DecimalType) type).getScale());
+            if (((DecimalType) type).isShort()) {
+                return WriteMapping.longMapping(dataType, shortDecimalWriteFunction((DecimalType) type));
+            }
+            return WriteMapping.sliceMapping(dataType, longDecimalWriteFunction((DecimalType) type));
+        }
+        if (type instanceof DoubleType) {
+            int t = 1;
+        }
+        WriteMapping writeMapping = WRITE_MAPPINGS.get(type);
+        if (writeMapping != null) {
+            return writeMapping;
+        }
+        throw new TrinoException(NOT_SUPPORTED, "Unsupported column type: " + type.getDisplayName());
     }
 
-    private ColumnMapping jsonColumnMapping()
+    @Override
+    protected Optional<List<String>> getTableTypes()
     {
-        return ColumnMapping.sliceMapping(
-                jsonType,
-                (resultSet, columnIndex) -> jsonParse(utf8Slice(resultSet.getString(columnIndex))),
-                varcharWriteFunction(),
-                DISABLE_PUSHDOWN);
+        return Optional.of(ImmutableList.of("TABLE", "VIEW", "SYSTEM TABLE"));
     }
 
-    private static Optional<ColumnMapping> getUnsignedMapping(JdbcTypeHandle typeHandle)
+    @Override
+    public boolean isLimitGuaranteed(ConnectorSession session)
     {
-        if (typeHandle.getJdbcTypeName().isEmpty()) {
-            return Optional.empty();
-        }
+        return true;
+    }
 
-        String typeName = typeHandle.getJdbcTypeName().get();
-        if (typeName.equalsIgnoreCase("tinyint unsigned")) {
-            return Optional.of(smallintColumnMapping());
-        }
-        if (typeName.equalsIgnoreCase("smallint unsigned")) {
-            return Optional.of(integerColumnMapping());
-        }
-        if (typeName.equalsIgnoreCase("int unsigned")) {
-            return Optional.of(bigintColumnMapping());
-        }
-        if (typeName.equalsIgnoreCase("bigint unsigned")) {
-            return Optional.of(decimalColumnMapping(createDecimalType(20)));
-        }
+    @Override
+    protected Optional<BiFunction<String, Long, String>> limitFunction()
+    {
+        return Optional.of((sql, limit) -> sql.replace("SELECT", "SELECT TOP " + limit));
+    }
 
-        return Optional.empty();
+    @Override
+    protected void copyTableSchema(Connection connection, String catalogName, String schemaName, String tableName, String newTableName, List<String> columnNames)
+    {
+        String sql = format(
+                "CREATE MULTISET TABLE %s AS (SELECT %s FROM %s) WITH NO DATA",
+                quoted(catalogName, schemaName, newTableName),
+                columnNames.stream()
+                        .map(this::quoted)
+                        .collect(joining(", ")),
+                quoted(catalogName, schemaName, tableName));
+        execute(connection, sql);
+    }
+
+    @Override
+    protected void renameTable(ConnectorSession session, String catalogName, String schemaName, String tableName, SchemaTableName newTable)
+    {
+        try (Connection connection = connectionFactory.openConnection(session)) {
+            String newSchemaName = newTable.getSchemaName();
+            String newTableName = newTable.getTableName();
+            if (connection.getMetaData().storesUpperCaseIdentifiers()) {
+                newSchemaName = newSchemaName.toUpperCase(ENGLISH);
+                newTableName = newTableName.toUpperCase(ENGLISH);
+            }
+            String sql = format(
+                    "RENAME TABLE %s AS %s",
+                    quoted(catalogName, schemaName, tableName),
+                    quoted(catalogName, newSchemaName, newTableName));
+            execute(connection, sql);
+        }
+        catch (SQLException e) {
+            throw new TrinoException(JDBC_ERROR, e);
+        }
+    }
+
+    @Override
+    protected String createTableSql(RemoteTableName remoteTableName, List<String> columns, ConnectorTableMetadata tableMetadata)
+    {
+        checkArgument(tableMetadata.getProperties().isEmpty(), "Unsupported table properties: %s", tableMetadata.getProperties());
+        return format("CREATE MULTISET TABLE %s (%s)", quoted(remoteTableName), join(", ", columns));
     }
 }

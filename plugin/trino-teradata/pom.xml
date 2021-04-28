@@ -25,7 +25,7 @@
 
         <dependency>
             <groupId>io.trino</groupId>
-            <artifactId>trino-plugin-toolkit</artifactId>
+            <artifactId>trino-tpcds</artifactId>
         </dependency>
 
         <dependency>
